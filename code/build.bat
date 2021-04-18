@@ -22,16 +22,21 @@ del *.pdb > NUL 2> NUL
 
 REM USING GLSL IN VK USING GLSLANGVALIDATOR
 call glslangValidator -DNAIVE=1 -S comp -e main -g -V -o %DataDir%\point_cloud_naive.spv %CodeDir%\point_cloud_shaders.cpp
+call glslangValidator -DDEPTH_TEST=1 -S comp -e main -g -V -o %DataDir%\point_cloud_depth.spv %CodeDir%\point_cloud_shaders.cpp
+call glslangValidator -DOVERLAPPING_FAST_PATH=1 --target-env spirv1.3 -S comp -e main -g -V -o %DataDir%\point_cloud_overlap_fast.spv %CodeDir%\point_cloud_shaders.cpp
 
 call glslangValidator -DCONVERT_TO_FLOAT=1 -S comp -e main -g -V -o %DataDir%\convert_to_float.spv %CodeDir%\point_cloud_shaders.cpp
 
 REM ASSIMP
 copy %AssimpDir%\assimp\bin\assimp-vc142-mt.dll %OutputDir%\assimp-vc142-mt.dll
 
+REM Point Cloud Converters
+call cl %CommonCompilerFlags% -Fepreprocess_robotics_3d.exe %CodeDir%\preprocess_robotics_3d_main.cpp -Fmpreprocess_robotics_3d_main.map /link %CommonLinkerFlags%
+
 REM 64-bit build
 echo WAITING FOR PDB > lock.tmp
 cl %CommonCompilerFlags% %CodeDir%\point_cloud_demo.cpp -Fmpoint_cloud_demo.map -LD /link %CommonLinkerFlags% -incremental:no -opt:ref -PDB:point_cloud_demo_%random%.pdb -EXPORT:Init -EXPORT:Destroy -EXPORT:SwapChainChange -EXPORT:CodeReload -EXPORT:MainLoop
 del lock.tmp
-call cl %CommonCompilerFlags% -DDLL_NAME=point_cloud_demo -Fepoint_cloud_demo.exe %LibsDir%\framework_vulkan\win32_main.cpp -Fmpoint_cloud_demo.map /link %CommonLinkerFlags%
+call cl %CommonCompilerFlags% -DFRAMEWORK_MEMORY_SIZE=GigaBytes(2) -DDLL_NAME=point_cloud_demo -Fepoint_cloud_demo.exe %LibsDir%\framework_vulkan\win32_main.cpp -Fmpoint_cloud_demo.map /link %CommonLinkerFlags%
 
 popd

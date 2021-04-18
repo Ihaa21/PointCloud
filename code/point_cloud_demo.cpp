@@ -53,6 +53,7 @@ DEMO_INIT(Init)
             {
                 "VK_EXT_shader_viewport_index_layer",
                 "VK_KHR_shader_atomic_int64",
+                "VK_EXT_shader_subgroup_ballot",
             };
             
             render_init_params InitParams = {};
@@ -60,7 +61,8 @@ DEMO_INIT(Init)
             //InitParams.PresentMode = VK_PRESENT_MODE_FIFO_KHR;
             InitParams.WindowWidth = WindowWidth;
             InitParams.WindowHeight = WindowHeight;
-            InitParams.StagingBufferSize = MegaBytes(400);
+            InitParams.GpuLocalSize = MegaBytes(1500);
+            InitParams.StagingBufferSize = MegaBytes(1500);
             InitParams.DeviceExtensionCount = ArrayCount(DeviceExtensions);
             InitParams.DeviceExtensions = DeviceExtensions;
             VkInit(VulkanLib, hInstance, WindowHandle, &DemoState->Arena, &DemoState->TempArena, InitParams);
@@ -128,12 +130,15 @@ DEMO_INIT(Init)
         PointCloudReCreate(WindowWidth, WindowHeight);
 
         VkDescriptorSetLayout Layouts[] =
-        {
-            DemoState->PointCloudDescLayout,
-        };
-        DemoState->PointCloudNaivePipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager,
-                                                                     &DemoState->TempArena, "point_cloud_naive.spv",
-                                                                     "main", Layouts, ArrayCount(Layouts));
+            {
+                DemoState->PointCloudDescLayout,
+            };
+        DemoState->PCNaivePipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_naive.spv", "main", Layouts, ArrayCount(Layouts));
+        DemoState->PCDepthPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_depth.spv", "main", Layouts, ArrayCount(Layouts));
+        DemoState->PCOverlapFastPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                                   "point_cloud_overlap_fast.spv", "main", Layouts, ArrayCount(Layouts));
 
         DemoState->ConvertToFloatPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager,
                                                                     &DemoState->TempArena, "convert_to_float.spv",
@@ -145,10 +150,11 @@ DEMO_INIT(Init)
     VkCommandsBegin(RenderState->Device, Commands);
     {
         // NOTE: Upload point cloud
+#if 0
         {
             // NOTE: This is generating a point cloud sphere, for debugging
-            u32 NumXSegments = 500;
-            u32 NumYSegments = 500;
+            u32 NumXSegments = 40;
+            u32 NumYSegments = 40;
 
             DemoState->NumPoints = NumXSegments * NumYSegments;
             DemoState->PointCloud = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
@@ -176,6 +182,28 @@ DEMO_INIT(Init)
                 }
             }
         }
+#else
+        {
+            temp_mem TempMem = BeginTempMem(&DemoState->Arena);
+
+            FILE* File = fopen("wue_city.bin", "rb");
+            fread(&DemoState->NumPoints, 1, sizeof(u32), File);
+
+            DemoState->PointCloud = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
+                                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                   sizeof(pc_point) * DemoState->NumPoints);
+            VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudDescriptor, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DemoState->PointCloud);
+
+            pc_point* GpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, DemoState->PointCloud, pc_point, DemoState->NumPoints,
+                                                        BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
+                                                        BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+
+            fread(GpuPtr, DemoState->NumPoints, sizeof(pc_point), File);
+            
+            fclose(File);
+            EndTempMem(TempMem);
+        }
+#endif
         
         // NOTE: Create UI
         UiStateCreate(RenderState->Device, &DemoState->Arena, &DemoState->TempArena, RenderState->LocalMemoryId,
@@ -264,7 +292,7 @@ DEMO_MAIN_LOOP(MainLoop)
                                                               BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             
             *GpuPtr = {};
-            GpuPtr->WVP = CameraGetVP(&DemoState->Camera) * M4Scale(V3(1));
+            GpuPtr->WVP = CameraGetVP(&DemoState->Camera) * M4Scale(V3(1, -1, 1)) * M4Scale(V3(0.0001f));
             GpuPtr->RenderWidth = DemoState->RenderWidth;
             GpuPtr->RenderHeight = DemoState->RenderHeight;
             GpuPtr->NumPoints = DemoState->NumPoints;
@@ -310,7 +338,9 @@ DEMO_MAIN_LOOP(MainLoop)
 
         // NOTE: Splat points
         {
-            vk_pipeline* Pipeline = DemoState->PointCloudNaivePipeline;
+            //vk_pipeline* Pipeline = DemoState->PCNaivePipeline;
+            //vk_pipeline* Pipeline = DemoState->PCDepthPipeline;
+            vk_pipeline* Pipeline = DemoState->PCOverlapFastPipeline;
             vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
@@ -318,8 +348,14 @@ DEMO_MAIN_LOOP(MainLoop)
                 };
             vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
-            u32 DispatchX = CeilU32(f32(DemoState->NumPoints) / f32(64));
-            vkCmdDispatch(Commands.Buffer, DispatchX, 1, 1);
+
+            u32 NumJobs = CeilU32(f32(DemoState->NumPoints) / 32.0f);
+            u32 Stride = Max(1u, CeilU32(f32(NumJobs) / f32(0xFFFF)));
+            u32 DispatchY = Stride;
+            u32 DispatchX = CeilU32(f32(NumJobs) / f32(Stride));
+
+            Assert((DispatchY * DispatchX) >= NumJobs);
+            vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
         }
 
         // NOTE: Wait on all writes

@@ -49,7 +49,9 @@ struct demo_state
     VkBuffer PointCloud;
     VkBuffer PCFrameBuffer;
     vk_image PCFloatFrameBuffer;
-    vk_pipeline* PointCloudNaivePipeline;
+    vk_pipeline* PCNaivePipeline;
+    vk_pipeline* PCDepthPipeline;
+    vk_pipeline* PCOverlapFastPipeline;
 
     vk_pipeline* ConvertToFloatPipeline;
     

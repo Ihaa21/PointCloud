@@ -4,6 +4,9 @@
 #extension GL_GOOGLE_include_directive : enable
 #extension GL_ARB_gpu_shader_int64 : enable
 #extension GL_EXT_shader_atomic_int64 : enable
+#extension GL_KHR_shader_subgroup_vote : enable
+#extension GL_KHR_shader_subgroup_arithmetic : enable
+#extension GL_KHR_shader_subgroup_clustered : enable
 
 layout(set = 0, binding = 0) uniform scene_globals
 {
@@ -31,12 +34,16 @@ layout(set = 0, binding = 2) buffer frame_buffer
 
 layout(set = 0, binding = 3, rgba8) uniform image2D FrameBufferFloat;
 
+//=========================================================================================================================================
+// NOTE: NAIVE
+//=========================================================================================================================================
+
 #if NAIVE
 
 layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
 void main()
 {
-    int PointId = int(gl_GlobalInvocationID.x);
+    int PointId = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
         point CurrPoint = PointCloud[PointId];
@@ -64,13 +71,127 @@ void main()
         }
 
         uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
-        
-        // TODO: Add depth testing
-        atomicMax(FrameBuffer[PixelId.y * SceneGlobals.RenderWidth + PixelId.x], WritePixelValue);
+        uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
+        // IMPORTANT: We are rendering with reversed Z
+        atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
     }
 }
 
 #endif
+
+//=========================================================================================================================================
+// NOTE: DEPTH TEST
+//=========================================================================================================================================
+
+#if DEPTH_TEST
+
+layout(local_size_x = 64, local_size_y = 1, local_size_z = 1) in;
+void main()
+{
+    int PointId = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * gl_LocalInvocationID.x);
+    if (PointId < SceneGlobals.NumPoints)
+    {
+        point CurrPoint = PointCloud[PointId];
+
+        // NOTE: Project Pos
+        uint Depth;
+        ivec2 PixelId;
+        {
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            ProjectedPos.xyz /= ProjectedPos.w;
+
+            // NOTE: Frustum Cull
+            if (ProjectedPos.x <= -1.0f || ProjectedPos.x >= 1.0f ||
+                ProjectedPos.y <= -1.0f || ProjectedPos.y >= 1.0f ||
+                ProjectedPos.w <= 0.0f)
+            {
+                return;
+            }
+            
+            ProjectedPos.xy = 0.5f * ProjectedPos.xy + vec2(0.5f);
+            ProjectedPos.xy *= vec2(SceneGlobals.RenderWidth, SceneGlobals.RenderHeight);
+            
+            Depth = floatBitsToInt(ProjectedPos.z);
+            PixelId = ivec2(ProjectedPos.xy);
+        }
+
+        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+        uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
+
+        // IMPORTANT: We are rendering with reversed Z
+        if (WritePixelValue > FrameBuffer[PixelIndex])
+        {
+            atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
+        }
+    }
+}
+
+#endif
+
+//=========================================================================================================================================
+// NOTE: OVERLAPPING FAST PATH
+//=========================================================================================================================================
+
+#if OVERLAPPING_FAST_PATH
+
+layout(local_size_x = 32, local_size_y = 1, local_size_z = 1) in;
+void main()
+{
+    int PointId = int((gl_WorkGroupID.y * gl_NumWorkGroups.x + gl_WorkGroupID.x) * gl_LocalInvocationID.x);
+    if (PointId < SceneGlobals.NumPoints)
+    {
+        point CurrPoint = PointCloud[PointId];
+
+        // NOTE: Project Pos
+        uint Depth;
+        ivec2 PixelId;
+        {
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            ProjectedPos.xyz /= ProjectedPos.w;
+
+            // NOTE: Frustum Cull
+            if (ProjectedPos.x <= -1.0f || ProjectedPos.x >= 1.0f ||
+                ProjectedPos.y <= -1.0f || ProjectedPos.y >= 1.0f ||
+                ProjectedPos.w <= 0.0f)
+            {
+                return;
+            }
+            
+            ProjectedPos.xy = 0.5f * ProjectedPos.xy + vec2(0.5f);
+            ProjectedPos.xy *= vec2(SceneGlobals.RenderWidth, SceneGlobals.RenderHeight);
+            
+            Depth = floatBitsToInt(ProjectedPos.z);
+            PixelId = ivec2(ProjectedPos.xy);
+        }
+
+        uint MinDepth = Depth;
+        uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
+        bool FastPath = subgroupAllEqual(PixelIndex);
+        if (FastPath)
+        {
+            MinDepth = subgroupMin(Depth);
+        }
+        
+        if (MinDepth == Depth)
+        {
+            uint64_t WritePixelValue = (uint64_t(MinDepth) << 32) | uint64_t(CurrPoint.Color);
+
+            if (FastPath || subgroupClusteredXor(PixelIndex, 2) != 0 || subgroupClusteredMin(Depth, 2) == Depth)
+            {
+                //if (WritePixelValue > FrameBuffer[PixelIndex])
+                {
+                    atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
+                }
+            }
+        }
+    }
+}
+
+#endif
+
+//=========================================================================================================================================
+// NOTE: CONVERT_TO_FLOAT
+//=========================================================================================================================================
 
 #if CONVERT_TO_FLOAT
 
