@@ -10,12 +10,31 @@ struct pc_point
     u32 Color;
 };
 
+struct pc_fixed_point
+{
+    u64 Pos;
+    u32 Color;
+};
+
 struct scene_globals
 {
     m4 WVP;
     u32 RenderWidth;
     u32 RenderHeight;
     u32 NumPoints;
+};
+
+#define FIXED_POINT 1
+struct point_cloud_data
+{
+    VkDescriptorSetLayout DescLayout;
+    VkDescriptorSet Descriptor;
+    VkBuffer Points;
+    vk_pipeline* NaivePipeline;
+    vk_pipeline* DepthPipeline;
+    vk_pipeline* NaiveWaveOpsPipeline;
+    vk_pipeline* DepthWaveOpsPipeline;
+    vk_pipeline* DepthWaveOps2Pipeline;
 };
 
 struct demo_state
@@ -40,19 +59,15 @@ struct demo_state
     
     camera Camera;
 
-    // NOTE: Point Cloud
     vk_linear_arena RenderTargetArena;
-    VkDescriptorSetLayout PointCloudDescLayout;
-    VkDescriptorSet PointCloudDescriptor;
     VkBuffer SceneUniforms;
     u32 NumPoints;
-    VkBuffer PointCloud;
     VkBuffer PCFrameBuffer;
     vk_image PCFloatFrameBuffer;
-    vk_pipeline* PCNaivePipeline;
-    vk_pipeline* PCDepthPipeline;
-    vk_pipeline* PCOverlapFastPipeline;
 
+    v3 PointCloudRadius;
+    point_cloud_data PointCloudData;
+    
     vk_pipeline* ConvertToFloatPipeline;
     
     ui_state UiState;

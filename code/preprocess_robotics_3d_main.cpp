@@ -95,10 +95,10 @@ int main(int argc, char** argv)
                 f32 Flt1, Flt2, Flt3, Flt4;
 
                 fscanf(PCFile, "%f %f %f %f\n", &Flt1, &Flt2, &Flt3, &Flt4);
-                u32 ColorChannel = u8(Abs(Flt4) * 255.0f);
+                u32 ColorChannel = u8(Abs(Flt4) * 5.0f);
                 
                 CurrPoint->Pos =  (PoseMat * V4(Flt1, Flt2, Flt3, 1.0f)).xyz;
-                CurrPoint->Color = (0xFF >> 0) | (ColorChannel >> 8) | (ColorChannel >> 16) | (ColorChannel >> 24);
+                CurrPoint->Color = (ColorChannel << 0) | (ColorChannel << 8) | (ColorChannel << 16) | (0xFF << 24);
             }
                 
             fclose(PCFile);

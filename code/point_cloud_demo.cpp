@@ -14,9 +14,15 @@ inline void PointCloudReCreate(u32 Width, u32 Height)
                                                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
                                                   VK_IMAGE_ASPECT_COLOR_BIT);
 
-    VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudDescriptor, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DemoState->PCFrameBuffer);
-    VkDescriptorImageWrite(&RenderState->DescriptorManager, DemoState->PointCloudDescriptor, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+#if FIXED_POINT
+    VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudData.Descriptor, 3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DemoState->PCFrameBuffer);
+    VkDescriptorImageWrite(&RenderState->DescriptorManager, DemoState->PointCloudData.Descriptor, 4, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
                            DemoState->PCFloatFrameBuffer.View, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL);
+#else
+    VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudData.Descriptor, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DemoState->PCFrameBuffer);
+    VkDescriptorImageWrite(&RenderState->DescriptorManager, DemoState->PointCloudData.Descriptor, 3, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+                           DemoState->PCFloatFrameBuffer.View, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_GENERAL);
+#endif
 
     VkDescriptorImageWrite(&RenderState->DescriptorManager, DemoState->CopyToSwapDesc, 0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
                            DemoState->PCFloatFrameBuffer.View, DemoState->PointSampler, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -102,16 +108,58 @@ DEMO_INIT(Init)
 
     // NOTE: Init camera
     {
-        DemoState->Camera = CameraFpsCreate(V3(0, 0, -3), V3(0, 0, 1), true, 1.0f, 0.015f);
+        DemoState->Camera = CameraFpsCreate(V3(0, 0, -6), V3(0, 0, 1), true, 1.0f, 0.015f);
         CameraSetPersp(&DemoState->Camera, f32(RenderState->WindowWidth / RenderState->WindowHeight), 69.375f, 0.01f, 1000.0f);
+    }
+
+    // NOTE: Global Data
+    {
+        DemoState->RenderTargetArena = VkLinearArenaCreate(RenderState->Device, RenderState->LocalMemoryId, MegaBytes(32));
+        DemoState->SceneUniforms = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
+                                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                  sizeof(scene_globals));
     }
 
     // NOTE: Point Cloud Data
     {
-        DemoState->RenderTargetArena = VkLinearArenaCreate(RenderState->Device, RenderState->LocalMemoryId, MegaBytes(32));
+        point_cloud_data* Data = &DemoState->PointCloudData;
+        
+#if FIXED_POINT
         
         {
-            vk_descriptor_layout_builder Builder = VkDescriptorLayoutBegin(&DemoState->PointCloudDescLayout);
+            vk_descriptor_layout_builder Builder = VkDescriptorLayoutBegin(&Data->DescLayout);
+            VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
+            VkDescriptorLayoutEnd(RenderState->Device, &Builder);
+        }
+
+        Data->Descriptor = VkDescriptorSetAllocate(RenderState->Device, RenderState->DescriptorPool, Data->DescLayout);
+        VkDescriptorBufferWrite(&RenderState->DescriptorManager, Data->Descriptor, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DemoState->SceneUniforms);
+        
+        VkDescriptorSetLayout Layouts[] =
+            {
+                Data->DescLayout,
+            };
+        Data->NaivePipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                      "point_cloud_fp_naive.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                      "point_cloud_fp_depth.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->NaiveWaveOpsPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_fp_naive_wave_ops.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthWaveOpsPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_fp_depth_wave_ops.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthWaveOps2Pipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                              "point_cloud_fp_depth_wave_ops_2.spv", "main", Layouts, ArrayCount(Layouts));
+        DemoState->ConvertToFloatPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager,
+                                                                    &DemoState->TempArena, "convert_to_float_fp.spv",
+                                                                    "main", Layouts, ArrayCount(Layouts));
+#else
+        
+        {
+            vk_descriptor_layout_builder Builder = VkDescriptorLayoutBegin(&Data->DescLayout);
             VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
             VkDescriptorLayoutAdd(&Builder, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT);
@@ -119,30 +167,31 @@ DEMO_INIT(Init)
             VkDescriptorLayoutEnd(RenderState->Device, &Builder);
         }
 
-        DemoState->SceneUniforms = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
-                                                  VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                  sizeof(scene_globals));
-        DemoState->PointCloudDescriptor = VkDescriptorSetAllocate(RenderState->Device, RenderState->DescriptorPool, DemoState->PointCloudDescLayout);
-        VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudDescriptor, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DemoState->SceneUniforms);
+        Data->Descriptor = VkDescriptorSetAllocate(RenderState->Device, RenderState->DescriptorPool, Data->DescLayout);
+        VkDescriptorBufferWrite(&RenderState->DescriptorManager, Data->Descriptor, 0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, DemoState->SceneUniforms);
         
-        DemoState->RenderWidth = WindowWidth;
-        DemoState->RenderHeight = WindowHeight;
-        PointCloudReCreate(WindowWidth, WindowHeight);
-
         VkDescriptorSetLayout Layouts[] =
             {
-                DemoState->PointCloudDescLayout,
+                Data->DescLayout,
             };
-        DemoState->PCNaivePipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
-                                                             "point_cloud_naive.spv", "main", Layouts, ArrayCount(Layouts));
-        DemoState->PCDepthPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
-                                                             "point_cloud_depth.spv", "main", Layouts, ArrayCount(Layouts));
-        DemoState->PCOverlapFastPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
-                                                                   "point_cloud_overlap_fast.spv", "main", Layouts, ArrayCount(Layouts));
-
+        Data->NaivePipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                      "point_cloud_naive.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                      "point_cloud_depth.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->NaiveWaveOpsPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_naive_wave_ops.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthWaveOpsPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                             "point_cloud_depth_wave_ops.spv", "main", Layouts, ArrayCount(Layouts));
+        Data->DepthWaveOps2Pipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager, &DemoState->TempArena,
+                                                              "point_cloud_depth_wave_ops_2.spv", "main", Layouts, ArrayCount(Layouts));
         DemoState->ConvertToFloatPipeline = VkPipelineComputeCreate(RenderState->Device, &RenderState->PipelineManager,
                                                                     &DemoState->TempArena, "convert_to_float.spv",
                                                                     "main", Layouts, ArrayCount(Layouts));
+#endif
+
+        DemoState->RenderWidth = WindowWidth;
+        DemoState->RenderHeight = WindowHeight;
+        PointCloudReCreate(WindowWidth, WindowHeight);
     }
     
     // NOTE: Upload assets
@@ -150,11 +199,13 @@ DEMO_INIT(Init)
     VkCommandsBegin(RenderState->Device, Commands);
     {
         // NOTE: Upload point cloud
+        point_cloud_data* PointCloudData = &DemoState->PointCloudData;
+
 #if 0
         {
             // NOTE: This is generating a point cloud sphere, for debugging
-            u32 NumXSegments = 40;
-            u32 NumYSegments = 40;
+            u32 NumXSegments = 4000;
+            u32 NumYSegments = 4000;
 
             DemoState->NumPoints = NumXSegments * NumYSegments;
             DemoState->PointCloud = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
@@ -177,7 +228,7 @@ DEMO_INIT(Init)
                                 Sin(Segment.x * 2.0f * Pi32) * Sin(Segment.y * Pi32));
 
                     CurrPoint->Pos = Pos;
-                    CurrPoint->Color = 0xFFFFFFFF;
+                    CurrPoint->Color = 0xFF00;
                     CurrPoint += 1;
                 }
             }
@@ -186,21 +237,81 @@ DEMO_INIT(Init)
         {
             temp_mem TempMem = BeginTempMem(&DemoState->Arena);
 
-            FILE* File = fopen("wue_city.bin", "rb");
+            // TODO: REMOVE
+            {
+                u64 TestInput = 2199024304128u;
+
+                u32 PosX = u32(TestInput >> 0u) & 0x1FFFFF;
+                u32 PosY = u32(TestInput >> 21u) & 0x1FFFFF;
+                u32 PosZ = u32(TestInput >> 42u) & 0x1FFFFF;
+
+                // NOTE: Move back to 32 bits
+                PosX = PosX << 11u;
+                PosY = PosY << 11u;
+                PosZ = PosZ << 11u;
+
+                i32 PosXI32 = *((i32*)&PosX);
+                i32 PosYI32 = *((i32*)&PosY);
+                i32 PosZI32 = *((i32*)&PosZ);
+
+                v3 Result = V3(PosXI32, PosYI32, PosZI32) / (-I32_MIN);
+
+                int i = 0;
+            }
+            
+#if FIXED_POINT
+
+            FILE* File = fopen("wue_city_sorted_fp.bin", "rb");
+            fread(&DemoState->NumPoints, 1, sizeof(u32), File);
+            fread(&DemoState->PointCloudRadius, 1, sizeof(v3), File);
+            
+            PointCloudData->Points = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
+                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                    (sizeof(u64) + sizeof(u32)) * DemoState->NumPoints);
+            VkDescriptorBufferWrite(&RenderState->DescriptorManager, PointCloudData->Descriptor, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PointCloudData->Points, 0);
+            VkDescriptorBufferWrite(&RenderState->DescriptorManager, PointCloudData->Descriptor, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PointCloudData->Points, sizeof(u64) * DemoState->NumPoints);
+
+            // NOTE: We write the data in a SOA format
+            u64* PosGpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points, u64, DemoState->NumPoints,
+                                                      BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
+                                                      BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+            
+            u32* ColorGpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points,
+                                                        sizeof(u64)*DemoState->NumPoints, u32, DemoState->NumPoints,
+                                                        BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
+                                                        BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
+
+            pc_fixed_point* SrcPoints = PushArray(&DemoState->Arena, pc_fixed_point, DemoState->NumPoints);
+            fread(SrcPoints, DemoState->NumPoints, sizeof(pc_fixed_point), File);
+
+            for (u32 PointId = 0; PointId < DemoState->NumPoints; ++PointId)
+            {
+                PosGpuPtr[PointId] = SrcPoints[PointId].Pos;
+                ColorGpuPtr[PointId] = SrcPoints[PointId].Color;
+            }
+            
+            fclose(File);
+            
+#else
+            
+            FILE* File = fopen("wue_city_sorted.bin", "rb");
             fread(&DemoState->NumPoints, 1, sizeof(u32), File);
 
-            DemoState->PointCloud = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
-                                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-                                                   sizeof(pc_point) * DemoState->NumPoints);
-            VkDescriptorBufferWrite(&RenderState->DescriptorManager, DemoState->PointCloudDescriptor, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, DemoState->PointCloud);
+            PointCloudData->Points = VkBufferCreate(RenderState->Device, &RenderState->GpuArena,
+                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                                                    sizeof(pc_point) * DemoState->NumPoints);
+            VkDescriptorBufferWrite(&RenderState->DescriptorManager, PointCloudData->Descriptor, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PointCloudData->Points);
 
-            pc_point* GpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, DemoState->PointCloud, pc_point, DemoState->NumPoints,
+            pc_point* GpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points, pc_point, DemoState->NumPoints,
                                                         BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                         BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
             fread(GpuPtr, DemoState->NumPoints, sizeof(pc_point), File);
             
             fclose(File);
+            
+#endif
+            
             EndTempMem(TempMem);
         }
 #endif
@@ -211,7 +322,7 @@ DEMO_INIT(Init)
                       RenderState->SwapChainFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &DemoState->UiState);
         
         VkDescriptorManagerFlush(RenderState->Device, &RenderState->DescriptorManager);
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, RenderState->Commands.Buffer, &RenderState->BarrierManager);
+        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, &RenderState->Commands);
     }
     
     VkCommandsSubmit(RenderState->GraphicsQueue, Commands);
@@ -293,12 +404,15 @@ DEMO_MAIN_LOOP(MainLoop)
             
             *GpuPtr = {};
             GpuPtr->WVP = CameraGetVP(&DemoState->Camera) * M4Scale(V3(1, -1, 1)) * M4Scale(V3(0.0001f));
+#if FIXED_POINT
+            GpuPtr->WVP = GpuPtr->WVP * M4Scale(DemoState->PointCloudRadius);
+#endif
             GpuPtr->RenderWidth = DemoState->RenderWidth;
             GpuPtr->RenderHeight = DemoState->RenderHeight;
             GpuPtr->NumPoints = DemoState->NumPoints;
         }
         
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, RenderState->Commands.Buffer, &RenderState->BarrierManager);
+        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, &RenderState->Commands);
     }
 
     // NOTE: Render Point Cloud
@@ -307,23 +421,23 @@ DEMO_MAIN_LOOP(MainLoop)
         {
             if (DemoState->WindowResized)
             {
-                VkBarrierImageAdd(&RenderState->BarrierManager,
+                VkBarrierImageAdd(&RenderState->Commands,
                                   VK_ACCESS_MEMORY_READ_BIT, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_IMAGE_LAYOUT_UNDEFINED,
                                   VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_IMAGE_LAYOUT_GENERAL,
                                   VK_IMAGE_ASPECT_COLOR_BIT, DemoState->PCFloatFrameBuffer.Image);
             }
             else
             {
-                VkBarrierImageAdd(&RenderState->BarrierManager,
+                VkBarrierImageAdd(&RenderState->Commands,
                                   VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                                   VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_IMAGE_LAYOUT_GENERAL,
                                   VK_IMAGE_ASPECT_COLOR_BIT, DemoState->PCFloatFrameBuffer.Image);
             }
 
-            VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+            VkBarrierBufferAdd(&RenderState->Commands, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, DemoState->PCFrameBuffer);
 
-            VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+            VkCommandsBarrierFlush(&RenderState->Commands);
         }
         
         // NOTE: Clear frame buffer
@@ -332,19 +446,23 @@ DEMO_MAIN_LOOP(MainLoop)
         }
 
         // NOTE: Wait on all writes
-        VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VkBarrierBufferAdd(&RenderState->Commands, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, DemoState->PCFrameBuffer);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+        VkCommandsBarrierFlush(&RenderState->Commands);
+
+        point_cloud_data* PointCloudData = &DemoState->PointCloudData;
 
         // NOTE: Splat points
-        {
-            //vk_pipeline* Pipeline = DemoState->PCNaivePipeline;
-            //vk_pipeline* Pipeline = DemoState->PCDepthPipeline;
-            vk_pipeline* Pipeline = DemoState->PCOverlapFastPipeline;
+        {            
+            //vk_pipeline* Pipeline = PointCloudData->PCNaivePipeline;
+            //vk_pipeline* Pipeline = PointCloudData->PCDepthPipeline;
+            //vk_pipeline* Pipeline = PointCloudData->PCNaiveWaveOpsPipeline;
+            //vk_pipeline* Pipeline = PointCloudData->PCDepthWaveOpsPipeline;
+            vk_pipeline* Pipeline = PointCloudData->DepthWaveOps2Pipeline;
             vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
-                    DemoState->PointCloudDescriptor,
+                    PointCloudData->Descriptor,
                 };
             vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
@@ -359,16 +477,16 @@ DEMO_MAIN_LOOP(MainLoop)
         }
 
         // NOTE: Wait on all writes
-        VkBarrierBufferAdd(&RenderState->BarrierManager, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+        VkBarrierBufferAdd(&RenderState->Commands, VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                            VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, DemoState->PCFrameBuffer);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+        VkCommandsBarrierFlush(&RenderState->Commands);
 
         {
             vk_pipeline* Pipeline = DemoState->ConvertToFloatPipeline;
             vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
-                    DemoState->PointCloudDescriptor,
+                    PointCloudData->Descriptor,
                 };
             vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
@@ -378,11 +496,11 @@ DEMO_MAIN_LOOP(MainLoop)
         }
 
         // NOTE: Transition to copy to swapchain
-        VkBarrierImageAdd(&RenderState->BarrierManager,
+        VkBarrierImageAdd(&RenderState->Commands,
                           VK_ACCESS_SHADER_WRITE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_IMAGE_LAYOUT_GENERAL,
                           VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                           VK_IMAGE_ASPECT_COLOR_BIT, DemoState->PCFloatFrameBuffer.Image);
-        VkBarrierManagerFlush(&RenderState->BarrierManager, Commands.Buffer);
+        VkCommandsBarrierFlush(&RenderState->Commands);
     }
     
     RenderTargetPassBegin(&DemoState->CopyToSwapTarget, Commands, RenderTargetRenderPass_SetViewPort | RenderTargetRenderPass_SetScissor);

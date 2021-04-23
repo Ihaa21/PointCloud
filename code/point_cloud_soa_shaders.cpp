@@ -16,12 +16,6 @@ layout(set = 0, binding = 0) uniform scene_globals
     uint NumPoints;
 } SceneGlobals;
 
-struct point
-{
-    vec3 Pos;
-    uint Color;
-};
-
 layout(set = 0, binding = 1) buffer point_cloud
 {
     point PointCloud[];
@@ -361,28 +355,6 @@ void main()
             }
         }
 #endif
-    }
-}
-
-#endif
-
-//=========================================================================================================================================
-// NOTE: CONVERT_TO_FLOAT
-//=========================================================================================================================================
-
-#if CONVERT_TO_FLOAT
-
-layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
-void main()
-{
-    ivec2 PixelId = ivec2(gl_GlobalInvocationID.xy);
-    if (PixelId.x < SceneGlobals.RenderWidth && PixelId.y < SceneGlobals.RenderHeight)
-    {
-        // NOTE: Reverse Y 
-        uint64_t SrcColor = FrameBuffer[(SceneGlobals.RenderHeight - PixelId.y) * SceneGlobals.RenderWidth + PixelId.x] & 0xFFFFFFFF;
-        vec4 FloatColor = vec4((SrcColor >> 0) & 0xFF, (SrcColor >> 8) & 0xFF, (SrcColor >> 16) & 0xFF, (SrcColor >> 24) & 0xFF);
-        FloatColor /= 255.0f;
-        imageStore(FrameBufferFloat, PixelId, FloatColor);
     }
 }
 

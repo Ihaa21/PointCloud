@@ -16,23 +16,45 @@ layout(set = 0, binding = 0) uniform scene_globals
     uint NumPoints;
 } SceneGlobals;
 
-struct point
+layout(set = 0, binding = 1) buffer point_cloud_pos
 {
-    vec3 Pos;
-    uint Color;
+    uint64_t PointCloudPos[];
 };
 
-layout(set = 0, binding = 1) buffer point_cloud
+layout(set = 0, binding = 2) buffer point_cloud_color
 {
-    point PointCloud[];
+    uint PointCloudColor[];
 };
 
-layout(set = 0, binding = 2) buffer frame_buffer
+layout(set = 0, binding = 3) buffer frame_buffer
 {
     uint64_t FrameBuffer[];
 };
 
-layout(set = 0, binding = 3, rgba8) uniform image2D FrameBufferFloat;
+layout(set = 0, binding = 4, rgba8) uniform image2D FrameBufferFloat;
+
+vec3 DecodePos(uint64_t PosFp)
+{
+    vec3 Result;
+
+    uint PosX = uint(PosFp >> 0u) & 0x1FFFFF;
+    uint PosY = uint(PosFp >> 21u) & 0x1FFFFF;
+    uint PosZ = uint(PosFp >> 42u) & 0x1FFFFF;
+
+    // NOTE: Move back to 32 bits
+    PosX = PosX << 11u;
+    PosY = PosY << 11u;
+    PosZ = PosZ << 11u;
+
+    int PosXI32 = int(PosX);
+    int PosYI32 = int(PosY);
+    int PosZI32 = int(PosZ);
+
+#define I32_MIN -2147483648
+    Result = vec3(PosXI32, PosYI32, PosZI32) / (-I32_MIN);
+
+    return Result;
+}
 
 #define WAVE_SIZE 32
 
@@ -49,13 +71,13 @@ void main()
     int PointId = WorkGroupId * WAVE_SIZE + int(gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
-        point CurrPoint = PointCloud[PointId];
+        vec3 Pos = DecodePos(PointCloudPos[PointId]);
 
         // NOTE: Project Pos
         uint Depth;
         ivec2 PixelId;
         {
-            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(Pos, 1));
             ProjectedPos.xyz /= ProjectedPos.w;
 
             // NOTE: Frustum Cull
@@ -73,7 +95,7 @@ void main()
             PixelId = ivec2(ProjectedPos.xy);
         }
 
-        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(PointCloudColor[PointId]);
         uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
         // IMPORTANT: We are rendering with reversed Z
         atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
@@ -95,13 +117,13 @@ void main()
     int PointId = WorkGroupId * WAVE_SIZE + int(gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
-        point CurrPoint = PointCloud[PointId];
+        vec3 Pos = DecodePos(PointCloudPos[PointId]);
 
         // NOTE: Project Pos
         uint Depth;
         ivec2 PixelId;
         {
-            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(Pos, 1));
             ProjectedPos.xyz /= ProjectedPos.w;
 
             // NOTE: Frustum Cull
@@ -119,7 +141,7 @@ void main()
             PixelId = ivec2(ProjectedPos.xy);
         }
 
-        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(PointCloudColor[PointId]);
         uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
 
         // IMPORTANT: We are rendering with reversed Z
@@ -145,13 +167,13 @@ void main()
     int PointId = WorkGroupId * WAVE_SIZE + int(gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
-        point CurrPoint = PointCloud[PointId];
+        vec3 Pos = DecodePos(PointCloudPos[PointId]);
 
         // NOTE: Project Pos
         uint Depth;
         ivec2 PixelId;
         {
-            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(Pos, 1));
             ProjectedPos.xyz /= ProjectedPos.w;
 
             // NOTE: Frustum Cull
@@ -179,7 +201,7 @@ void main()
             {
                 if (subgroupElect())
                 {
-                    uint64_t WritePixelValue = (uint64_t(MinDepth) << 32) | uint64_t(CurrPoint.Color);
+                    uint64_t WritePixelValue = (uint64_t(MinDepth) << 32) | uint64_t(PointCloudColor[PointId]);
                     atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
                 }
             }
@@ -187,7 +209,7 @@ void main()
         else
         {
             // IMPORTANT: We are rendering with reversed Z
-            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(PointCloudColor[PointId]);
             atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
         }
     }
@@ -208,13 +230,13 @@ void main()
     int PointId = WorkGroupId * WAVE_SIZE + int(gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
-        point CurrPoint = PointCloud[PointId];
+        vec3 Pos = DecodePos(PointCloudPos[PointId]);
 
         // NOTE: Project Pos
         uint Depth;
         ivec2 PixelId;
         {
-            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(Pos, 1));
             ProjectedPos.xyz /= ProjectedPos.w;
 
             // NOTE: Frustum Cull
@@ -242,7 +264,7 @@ void main()
             {
                 if (subgroupElect())
                 {
-                    uint64_t WritePixelValue = (uint64_t(MinDepth) << 32) | uint64_t(CurrPoint.Color);
+                    uint64_t WritePixelValue = (uint64_t(MinDepth) << 32) | uint64_t(PointCloudColor[PointId]);
                     if (WritePixelValue > FrameBuffer[PixelIndex])
                     {
                         atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
@@ -253,7 +275,7 @@ void main()
         else
         {
             // IMPORTANT: We are rendering with reversed Z
-            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(PointCloudColor[PointId]);
             if (WritePixelValue > FrameBuffer[PixelIndex])
             {
                 atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
@@ -278,13 +300,14 @@ void main()
     int PointId = WorkGroupId * WAVE_SIZE + int(gl_LocalInvocationID.x);
     if (PointId < SceneGlobals.NumPoints)
     {
-        point CurrPoint = PointCloud[PointId];
+        vec3 Pos = DecodePos(PointCloudPos[PointId]);
+        uint Color = PointCloudColor[PointId];
 
         // NOTE: Project Pos
         uint Depth;
         ivec2 PixelId;
         {
-            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(CurrPoint.Pos, 1));
+            vec4 ProjectedPos = (SceneGlobals.WVP * vec4(Pos, 1));
             ProjectedPos.xyz /= ProjectedPos.w;
 
             // NOTE: Frustum Cull
@@ -314,7 +337,7 @@ void main()
         // no fast path or thread was depth comp winner
         if (MinDepth == Depth)
         {
-            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(CurrPoint.Color);
+            uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(Color);
 
             // last chance for reduction
             if (FastPath
