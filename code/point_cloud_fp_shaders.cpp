@@ -39,12 +39,12 @@ vec3 DecodePos(uint64_t PosFp)
 
     uint PosX = uint(PosFp >> 0u) & 0x1FFFFF;
     uint PosY = uint(PosFp >> 21u) & 0x1FFFFF;
-    uint PosZ = uint(PosFp >> 42u) & 0x1FFFFF;
+    uint PosZ = uint(PosFp >> 42u) & 0x0FFFFF;
 
     // NOTE: Move back to 32 bits
     PosX = PosX << 11u;
     PosY = PosY << 11u;
-    PosZ = PosZ << 11u;
+    PosZ = PosZ << 12u;
 
     int PosXI32 = int(PosX);
     int PosYI32 = int(PosY);
@@ -326,7 +326,10 @@ void main()
         }
 
         uint PixelIndex = PixelId.y * SceneGlobals.RenderWidth + PixelId.x;
-
+        uint64_t WritePixelValue = (uint64_t(Depth) << 32) | uint64_t(Color);
+        atomicMax(FrameBuffer[PixelIndex], WritePixelValue);
+        
+#if 0
         uint MinDepth = Depth;
         bool FastPath = subgroupAllEqual(PixelIndex);
         if (FastPath) // fast path for min
@@ -383,6 +386,7 @@ void main()
                 }
             }
         }
+#endif
 #endif
     }
 }

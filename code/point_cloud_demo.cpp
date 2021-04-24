@@ -195,8 +195,8 @@ DEMO_INIT(Init)
     }
     
     // NOTE: Upload assets
-    vk_commands Commands = RenderState->Commands;
-    VkCommandsBegin(RenderState->Device, Commands);
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
     {
         // NOTE: Upload point cloud
         point_cloud_data* PointCloudData = &DemoState->PointCloudData;
@@ -243,12 +243,12 @@ DEMO_INIT(Init)
 
                 u32 PosX = u32(TestInput >> 0u) & 0x1FFFFF;
                 u32 PosY = u32(TestInput >> 21u) & 0x1FFFFF;
-                u32 PosZ = u32(TestInput >> 42u) & 0x1FFFFF;
+                u32 PosZ = u32(TestInput >> 42u) & 0x0FFFFF;
 
                 // NOTE: Move back to 32 bits
                 PosX = PosX << 11u;
                 PosY = PosY << 11u;
-                PosZ = PosZ << 11u;
+                PosZ = PosZ << 10u;
 
                 i32 PosXI32 = *((i32*)&PosX);
                 i32 PosYI32 = *((i32*)&PosY);
@@ -272,11 +272,11 @@ DEMO_INIT(Init)
             VkDescriptorBufferWrite(&RenderState->DescriptorManager, PointCloudData->Descriptor, 2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PointCloudData->Points, sizeof(u64) * DemoState->NumPoints);
 
             // NOTE: We write the data in a SOA format
-            u64* PosGpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points, u64, DemoState->NumPoints,
+            u64* PosGpuPtr = VkCommandsPushWriteArray(&RenderState->Commands, PointCloudData->Points, u64, DemoState->NumPoints,
                                                       BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                       BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             
-            u32* ColorGpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points,
+            u32* ColorGpuPtr = VkCommandsPushWriteArray(&RenderState->Commands, PointCloudData->Points,
                                                         sizeof(u64)*DemoState->NumPoints, u32, DemoState->NumPoints,
                                                         BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                         BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
@@ -302,7 +302,7 @@ DEMO_INIT(Init)
                                                     sizeof(pc_point) * DemoState->NumPoints);
             VkDescriptorBufferWrite(&RenderState->DescriptorManager, PointCloudData->Descriptor, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, PointCloudData->Points);
 
-            pc_point* GpuPtr = VkTransferPushWriteArray(&RenderState->TransferManager, PointCloudData->Points, pc_point, DemoState->NumPoints,
+            pc_point* GpuPtr = VkCommandsPushWriteArray(&RenderState->Commands, PointCloudData->Points, pc_point, DemoState->NumPoints,
                                                         BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                         BarrierMask(VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
 
@@ -318,14 +318,13 @@ DEMO_INIT(Init)
         
         // NOTE: Create UI
         UiStateCreate(RenderState->Device, &DemoState->Arena, &DemoState->TempArena, RenderState->LocalMemoryId,
-                      &RenderState->DescriptorManager, &RenderState->PipelineManager, &RenderState->TransferManager,
+                      &RenderState->DescriptorManager, &RenderState->PipelineManager, &RenderState->Commands,
                       RenderState->SwapChainFormat, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, &DemoState->UiState);
         
         VkDescriptorManagerFlush(RenderState->Device, &RenderState->DescriptorManager);
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, &RenderState->Commands);
     }
     
-    VkCommandsSubmit(RenderState->GraphicsQueue, Commands);
+    VkCommandsSubmit(Commands, RenderState->Device, RenderState->GraphicsQueue);
 }
 
 DEMO_DESTROY(Destroy)
@@ -366,8 +365,8 @@ DEMO_MAIN_LOOP(MainLoop)
                                         VK_NULL_HANDLE, &ImageIndex));
     DemoState->SwapChainEntry.View = RenderState->SwapChainViews[ImageIndex];
 
-    vk_commands Commands = RenderState->Commands;
-    VkCommandsBegin(RenderState->Device, Commands);
+    vk_commands* Commands = &RenderState->Commands;
+    VkCommandsBegin(Commands, RenderState->Device);
 
     // NOTE: Update pipelines
     VkPipelineUpdateShaders(RenderState->Device, &RenderState->CpuArena, &RenderState->PipelineManager);
@@ -398,7 +397,7 @@ DEMO_MAIN_LOOP(MainLoop)
         
         // NOTE: Push Scene Globals
         {
-            scene_globals* GpuPtr = VkTransferPushWriteStruct(&RenderState->TransferManager, DemoState->SceneUniforms, scene_globals,
+            scene_globals* GpuPtr = VkCommandsPushWriteStruct(&RenderState->Commands, DemoState->SceneUniforms, scene_globals,
                                                               BarrierMask(VkAccessFlagBits(0), VK_PIPELINE_STAGE_ALL_COMMANDS_BIT),
                                                               BarrierMask(VK_ACCESS_UNIFORM_READ_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT));
             
@@ -412,7 +411,7 @@ DEMO_MAIN_LOOP(MainLoop)
             GpuPtr->NumPoints = DemoState->NumPoints;
         }
         
-        VkTransferManagerFlush(&RenderState->TransferManager, RenderState->Device, &RenderState->Commands);
+        VkCommandsTransferFlush(&RenderState->Commands, RenderState->Device);
     }
 
     // NOTE: Render Point Cloud
@@ -442,7 +441,7 @@ DEMO_MAIN_LOOP(MainLoop)
         
         // NOTE: Clear frame buffer
         {
-            vkCmdFillBuffer(Commands.Buffer, DemoState->PCFrameBuffer, 0, VK_WHOLE_SIZE, 0);
+            vkCmdFillBuffer(Commands->Buffer, DemoState->PCFrameBuffer, 0, VK_WHOLE_SIZE, 0);
         }
 
         // NOTE: Wait on all writes
@@ -454,17 +453,17 @@ DEMO_MAIN_LOOP(MainLoop)
 
         // NOTE: Splat points
         {            
-            //vk_pipeline* Pipeline = PointCloudData->PCNaivePipeline;
-            //vk_pipeline* Pipeline = PointCloudData->PCDepthPipeline;
-            //vk_pipeline* Pipeline = PointCloudData->PCNaiveWaveOpsPipeline;
-            //vk_pipeline* Pipeline = PointCloudData->PCDepthWaveOpsPipeline;
-            vk_pipeline* Pipeline = PointCloudData->DepthWaveOps2Pipeline;
-            vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
+            vk_pipeline* Pipeline = PointCloudData->NaivePipeline;
+            //vk_pipeline* Pipeline = PointCloudData->DepthPipeline;
+            //vk_pipeline* Pipeline = PointCloudData->NaiveWaveOpsPipeline;
+            //vk_pipeline* Pipeline = PointCloudData->DepthWaveOpsPipeline;
+            //vk_pipeline* Pipeline = PointCloudData->DepthWaveOps2Pipeline;
+            vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
                     PointCloudData->Descriptor,
                 };
-            vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
+            vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
 
             u32 NumJobs = CeilU32(f32(DemoState->NumPoints) / 32.0f);
@@ -473,7 +472,7 @@ DEMO_MAIN_LOOP(MainLoop)
             u32 DispatchX = CeilU32(f32(NumJobs) / f32(Stride));
 
             Assert((DispatchY * DispatchX) >= NumJobs);
-            vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
+            vkCmdDispatch(Commands->Buffer, DispatchX, DispatchY, 1);
         }
 
         // NOTE: Wait on all writes
@@ -483,16 +482,16 @@ DEMO_MAIN_LOOP(MainLoop)
 
         {
             vk_pipeline* Pipeline = DemoState->ConvertToFloatPipeline;
-            vkCmdBindPipeline(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
+            vkCmdBindPipeline(Commands->Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Handle);
             VkDescriptorSet DescriptorSets[] =
                 {
                     PointCloudData->Descriptor,
                 };
-            vkCmdBindDescriptorSets(Commands.Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
+            vkCmdBindDescriptorSets(Commands->Buffer, VK_PIPELINE_BIND_POINT_COMPUTE, Pipeline->Layout, 0,
                                     ArrayCount(DescriptorSets), DescriptorSets, 0, 0);
             u32 DispatchX = CeilU32(f32(RenderState->WindowWidth) / f32(8));
             u32 DispatchY = CeilU32(f32(RenderState->WindowHeight) / f32(8));
-            vkCmdDispatch(Commands.Buffer, DispatchX, DispatchY, 1);
+            vkCmdDispatch(Commands->Buffer, DispatchX, DispatchY, 1);
         }
 
         // NOTE: Transition to copy to swapchain
@@ -507,8 +506,8 @@ DEMO_MAIN_LOOP(MainLoop)
     FullScreenPassRender(Commands, DemoState->CopyToSwapPipeline, 1, &DemoState->CopyToSwapDesc);
     RenderTargetPassEnd(Commands);
     UiStateRender(&DemoState->UiState, RenderState->Device, Commands, DemoState->SwapChainEntry.View);
-    
-    VkCheckResult(vkEndCommandBuffer(Commands.Buffer));
+
+    VkCommandsEnd(Commands, RenderState->Device);
                     
     // NOTE: Render to our window surface
     // NOTE: Tell queue where we render to surface to wait
@@ -519,10 +518,10 @@ DEMO_MAIN_LOOP(MainLoop)
     SubmitInfo.pWaitSemaphores = &RenderState->ImageAvailableSemaphore;
     SubmitInfo.pWaitDstStageMask = &WaitDstMask;
     SubmitInfo.commandBufferCount = 1;
-    SubmitInfo.pCommandBuffers = &Commands.Buffer;
+    SubmitInfo.pCommandBuffers = &Commands->Buffer;
     SubmitInfo.signalSemaphoreCount = 1;
     SubmitInfo.pSignalSemaphores = &RenderState->FinishedRenderingSemaphore;
-    VkCheckResult(vkQueueSubmit(RenderState->GraphicsQueue, 1, &SubmitInfo, Commands.Fence));
+    VkCheckResult(vkQueueSubmit(RenderState->GraphicsQueue, 1, &SubmitInfo, Commands->Fence));
     
     VkPresentInfoKHR PresentInfo = {};
     PresentInfo.sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR;

@@ -59,7 +59,7 @@ int main(int argc, char** argv)
             i64 PosZ64 = PosZ;
             PosX64 = (PosX64 >> 11u) & 0x1FFFFF;
             PosY64 = (PosY64 >> 11u) & 0x1FFFFF;
-            PosZ64 = (PosZ64 >> 11u) & 0x1FFFFF;
+            PosZ64 = (PosZ64 >> 12u) & 0x0FFFFF;
 
             u64 PosXU64 = *((u64*)&PosX64);
             u64 PosYU64 = *((u64*)&PosY64);
