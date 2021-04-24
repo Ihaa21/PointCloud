@@ -68,7 +68,6 @@ DEMO_INIT(Init)
             InitParams.WindowWidth = WindowWidth;
             InitParams.WindowHeight = WindowHeight;
             InitParams.GpuLocalSize = MegaBytes(1500);
-            InitParams.StagingBufferSize = MegaBytes(1500);
             InitParams.DeviceExtensionCount = ArrayCount(DeviceExtensions);
             InitParams.DeviceExtensions = DeviceExtensions;
             VkInit(VulkanLib, hInstance, WindowHandle, &DemoState->Arena, &DemoState->TempArena, InitParams);
